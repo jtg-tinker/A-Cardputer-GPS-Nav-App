@@ -1,0 +1,7 @@
+{
+  "name": "navcore",
+  "version": "0.1.0",
+  "description": "Hardware-independent geo math, tile addressing and GPX parsing for cardputer-gps-nav",
+  "platforms": "*",
+  "frameworks": "*"
+}
