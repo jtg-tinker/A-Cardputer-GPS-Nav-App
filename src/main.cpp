@@ -9,7 +9,7 @@
 
 namespace app {
 
-M5Canvas canvas(&M5Cardputer.Display);
+M5Canvas canvas;  // no parent: M5Cardputer.Display is a reference not yet bound during static init
 AppConfig config;
 GpsReceiver gps;
 NavData navdata;

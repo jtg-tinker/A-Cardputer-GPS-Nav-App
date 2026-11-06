@@ -13,6 +13,9 @@ Key readKey(bool textMode) {
     Key k;
     if (M5Cardputer.BtnA.wasPressed()) {
         k.any = k.enter = true;
+#ifdef GPSNAV_DEBUG_KEYS
+        Serial.println("[gpsnav] key BtnA");
+#endif
         return k;
     }
 
@@ -53,5 +56,9 @@ Key readKey(bool textMode) {
         if (navKey) k.ch = 0;
     }
     k.any = k.ch || k.enter || k.del || k.up || k.down || k.left || k.right || k.back;
+#ifdef GPSNAV_DEBUG_KEYS
+    if (k.any) Serial.printf("[gpsnav] key ch=%d enter=%d del=%d fn=%d words=%u hid=%u\n", k.ch, k.enter, k.del, k.fn,
+                             (unsigned)s.word.size(), (unsigned)s.hid_keys.size());
+#endif
     return k;
 }

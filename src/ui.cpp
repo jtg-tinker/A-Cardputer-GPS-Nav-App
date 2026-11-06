@@ -30,7 +30,7 @@ void footer(const char *hint) {
     canvas.setTextDatum(top_left);
 }
 
-void present() { canvas.pushSprite(0, 0); }
+void present() { canvas.pushSprite(&M5Cardputer.Display, 0, 0); }
 
 int paragraph(const String &text, int x, int y, int w, uint16_t color) {
     canvas.setFont(&fonts::Font0);

@@ -14,7 +14,7 @@ using app::canvas;
 MapView mapView;
 
 namespace {
-M5Canvas base(&M5Cardputer.Display);
+M5Canvas base;
 constexpr int kPanStep = 48;
 constexpr uint16_t kNoTile = 0xDEFB;
 constexpr uint16_t kRouteColor = 0xF81F;
