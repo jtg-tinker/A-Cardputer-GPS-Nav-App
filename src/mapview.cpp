@@ -226,9 +226,8 @@ void MapView::drawStatus() {
     const GpsFix fix = app::gps.fix();
     char left[48], right[40];
     // Top bar: GNSS state, speed, recording, battery
-    canvas.fillRect(0, 0, app::kW, 11, 0x0000);
-    canvas.setFont(&fonts::Font0);
-    canvas.setTextDatum(top_left);
+    constexpr int kTopBarH = 20;
+    canvas.fillRect(0, 0, app::kW, kTopBarH, 0x0000);
     uint16_t c = ui::kGood;
     if (!app::gps.receivingData()) {
         snprintf(left, sizeof left, "NO GNSS DATA");
@@ -241,14 +240,19 @@ void MapView::drawStatus() {
         nav::formatSpeed(fix.speedKmh, app::config.imperial, spd, sizeof spd);
         snprintf(left, sizeof left, "Sat:%lu %s", (unsigned long)fix.sats, spd);
     }
-    canvas.setTextColor(c);
-    canvas.drawString(left, 2, 2);
     const int bat = M5Cardputer.Power.getBatteryLevel();
     snprintf(right, sizeof right, "%sZ%d%s %s", app::navdata.recording() ? "REC " : "", zoom_, follow_ ? " F" : "",
              bat >= 0 ? (String(bat) + "%").c_str() : "");
+    canvas.setTextSize(1);
+    canvas.setFont(&fonts::Font2);
+    if (canvas.textWidth(left) + canvas.textWidth(right) + 8 > app::kW - 4) canvas.setFont(&fonts::Font0);
+    canvas.setTextColor(c);
+    canvas.setTextDatum(middle_left);
+    canvas.drawString(left, 2, kTopBarH / 2);
     canvas.setTextColor(app::navdata.recording() ? ui::kBad : ui::kFg);
-    canvas.setTextDatum(top_right);
-    canvas.drawString(right, app::kW - 2, 2);
+    canvas.setTextDatum(middle_right);
+    canvas.drawString(right, app::kW - 2, kTopBarH / 2);
+    canvas.setFont(&fonts::Font0);
     canvas.setTextDatum(top_left);
 
     // Bottom bar: guidance or coordinates
