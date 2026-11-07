@@ -21,6 +21,7 @@ bool begin() {
     for (int attempt = 0; attempt < 3; ++attempt) {
         if (SD.begin(kSdCs, SPI, 25000000)) {
             mkdirs(kTilesRoot);
+            mkdirs(kStreetsRoot);
             mkdirs(kRoutesDir);
             mkdirs(kTracksDir);
             return true;

@@ -4,6 +4,7 @@
 #include <HTTPClient.h>
 #include <NetworkClientSecure.h>
 #include <WiFi.h>
+#include <streets.h>
 #include <tilesource.h>
 
 #include "app.h"
@@ -11,6 +12,7 @@
 #include "input.h"
 #include "mapview.h"
 #include "storage.h"
+#include "streetdata.h"
 #include "ui.h"
 
 using app::canvas;
@@ -205,6 +207,57 @@ FetchResult fetchTile(HTTPClient &http, NetworkClientSecure &client, int z, int 
     return FetchResult::Failed;
 }
 
+// Vector street data for one z14 tile, stored as a compact street file. Empty tiles (no data
+// at the server) still get an empty street file so lookups know the area was downloaded.
+FetchResult fetchStreetTile(HTTPClient &http, NetworkClientSecure &client, int x, int y, const char *path,
+                            int &lastCode) {
+    char url[256];
+    if (!nav::buildStreetUrl(app::config.apiKey.c_str(), nav::kStreetZoom, x, y, url, sizeof url))
+        return FetchResult::AuthError;
+    const String tmp = String(path) + ".pbf";
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        if (!http.begin(client, url)) return FetchResult::Failed;
+        http.setUserAgent(app::kUserAgent);
+        http.setTimeout(15000);
+        http.setConnectTimeout(10000);
+        static const char *kHeaders[] = {"Content-Type"};
+        http.collectHeaders(kHeaders, 1);
+        const int code = http.GET();
+        lastCode = code;
+        const bool empty = code == 204 || code == 404;
+        if (code == HTTP_CODE_OK || empty) {
+            const String type = http.header("Content-Type");
+            if (code == HTTP_CODE_OK && (type.startsWith("text/") || type.indexOf("json") >= 0)) {
+                http.end();
+                return FetchResult::Failed;
+            }
+            File f = SD.open(tmp, FILE_WRITE);
+            if (!f) {
+                http.end();
+                return FetchResult::Failed;
+            }
+            const int written = empty ? 0 : http.writeToStream(&f);
+            f.close();
+            http.end();
+            const bool ok = written >= 0 && streetdata::convertDownloaded(tmp.c_str(), path);
+            SD.remove(tmp);
+            if (ok) return empty ? FetchResult::NotFound : FetchResult::Ok;
+            continue;
+        }
+        http.end();
+        if (code == 401 || code == 403) return FetchResult::AuthError;
+        if (code == 400) return FetchResult::NotFound;
+        if (code == 429) {
+            const uint32_t until = millis() + 10000;
+            while (millis() < until) { app::service(); delay(50); }
+        } else if (code < 0) {
+            client.stop();
+            delay(500);
+        }
+    }
+    return FetchResult::Failed;
+}
+
 }  // namespace
 
 String testProvider() {
@@ -236,7 +289,10 @@ bool downloadRegion(const Region &r) {
     HTTPClient http;
     http.setReuse(true);
 
-    const uint32_t total = nav::tileCount(r.box, r.zMin, r.zMax);
+    const bool wantStreets = cfg.provider == nav::Provider::MapTiler;
+    const nav::TileRange sr = nav::tileRangeFor(r.box, nav::kStreetZoom);
+    const uint32_t streetTotal = wantStreets ? uint32_t(sr.x1 - sr.x0 + 1) * uint32_t(sr.y1 - sr.y0 + 1) : 0;
+    const uint32_t total = nav::tileCount(r.box, r.zMin, r.zMax) + streetTotal;
     uint32_t done = 0, ok = 0, skipped = 0, failed = 0, missing = 0;
     const uint32_t startedAt = millis();
     uint32_t lastDraw = 0;
@@ -252,9 +308,11 @@ bool downloadRegion(const Region &r) {
         const float pct = total ? 100.0f * done / total : 100.0f;
         canvas.drawRect(4, 22, app::kW - 8, 12, ui::kAccent);
         canvas.fillRect(6, 24, int((app::kW - 12) * pct / 100.0f), 8, ui::kAccent);
-        char line[64];
-        snprintf(line, sizeof line, "%lu / %lu tiles (%.1f%%)  zoom %d", (unsigned long)done, (unsigned long)total,
-                 pct, z);
+        char line[64], stage[16];
+        if (z >= 0) snprintf(stage, sizeof stage, "zoom %d", z);
+        else snprintf(stage, sizeof stage, "street names");
+        snprintf(line, sizeof line, "%lu / %lu tiles (%.1f%%)  %s", (unsigned long)done, (unsigned long)total,
+                 pct, stage);
         canvas.drawString(line, 4, 40);
         snprintf(line, sizeof line, "new %lu  cached %lu  failed %lu", (unsigned long)ok, (unsigned long)skipped,
                  (unsigned long)(failed + missing));
@@ -317,6 +375,44 @@ bool downloadRegion(const Region &r) {
             }
         }
     }
+    String streetNote;
+    for (int x = sr.x0; wantStreets && x <= sr.x1 && !abortReason.length() && !streetNote.length(); ++x) {
+        if (nav::buildStreetDir(storage::kStreetsRoot, nav::kStreetZoom, x, dir, sizeof dir)) storage::mkdirs(dir);
+        for (int y = sr.y0; y <= sr.y1; ++y) {
+            app::service();
+            if (cancelRequested() && ui::confirm("Cancel download?", "Tiles fetched so far are kept.")) {
+                abortReason = "Cancelled.";
+                break;
+            }
+            if (!nav::buildStreetPath(storage::kStreetsRoot, nav::kStreetZoom, x, y, path, sizeof path)) {
+                abortReason = "Street data path too long.";
+                break;
+            }
+            if (SD.exists(path)) {
+                ++skipped;
+            } else {
+                switch (fetchStreetTile(http, client, x, y, path, lastCode)) {
+                    case FetchResult::Ok: ++ok; break;
+                    case FetchResult::NotFound: ++missing; break;
+                    case FetchResult::AuthError:
+                        streetNote = "Street names skipped: MapTiler refused the street data (HTTP " +
+                                     String(lastCode) + ").";
+                        break;
+                    case FetchResult::Failed:
+                        ++failed;
+                        if (WiFi.status() != WL_CONNECTED && !wifiConnect()) abortReason = "WiFi lost.";
+                        break;
+                }
+                if (abortReason.length() || streetNote.length()) break;
+            }
+            ++done;
+            if (millis() - lastDraw > 250) {
+                lastDraw = millis();
+                draw(-1);
+            }
+        }
+    }
+    if (!wantStreets) streetNote = "Street names in the top bar need a MapTiler key.";
     http.end();
     client.stop();
     wifiOff();
@@ -328,7 +424,8 @@ bool downloadRegion(const Region &r) {
         ui::message("Download stopped", abortReason + "\n\n" + summary);
         return false;
     }
-    ui::message("Download complete", String(summary) + (failed ? "\n\nRun it again to retry failed tiles." : ""));
+    ui::message("Download complete", String(summary) + (failed ? "\n\nRun it again to retry failed tiles." : "") +
+                                         (streetNote.length() ? "\n\n" + streetNote : String()));
     return true;
 }
 

@@ -23,6 +23,8 @@ If flashing won't start, hold **G0** while you plug in USB to enter download mod
 1. Insert the microSD card and attach the LoRa-1262 cap. Go outside to get a GPS fix.
 2. Open **Menu → Settings**. Choose a tile provider, enter your API key, then set up WiFi.
 3. Open **Menu → Download maps**. Choose an area: around your GPS position, around the map center, a place search (Nominatim), or coordinates you enter. Pick a radius (1–100 km) and a max detail level (z10–z18; z16 shows streets). The screen shows the tile count and estimated size before the download starts.
+
+   With a MapTiler key the download also fetches MapTiler street data (vector tiles at z14) for the same area. Afterwards the top bar gets a second line showing the nearest named street (within 50 m) at your GPS position, or at the crosshair while you pan. A "-" means there is street data but no named street nearby. Thunderforest downloads don't include street data.
 4. If a download is interrupted, open **Download maps → Saved regions** and choose resume. Tiles you already have are skipped.
 
 ## Map keys
@@ -48,6 +50,7 @@ In menus, `` ` `` goes back. In text fields, use `fn` plus the key for the arrow
 ```
 /gpsnav/config.json         settings (WiFi, provider, API key, units, brightness)
 /gpsnav/tiles/<provider>-<style>/<z>/<x>/<y>.jpg
+/gpsnav/streets/14/<x>/<y>.bin  street names + lines (MapTiler regions)
 /gpsnav/regions.csv         saved download regions
 /gpsnav/waypoints.gpx       waypoints
 /gpsnav/routes/*.gpx        GPX routes/tracks to follow (copy them here)

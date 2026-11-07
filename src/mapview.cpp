@@ -7,6 +7,7 @@
 #include "input.h"
 #include "screens.h"
 #include "storage.h"
+#include "streetdata.h"
 #include "ui.h"
 
 using app::canvas;
@@ -225,9 +226,12 @@ void MapView::drawOverlays() {
 void MapView::drawStatus() {
     const GpsFix fix = app::gps.fix();
     char left[48], right[40];
-    // Top bar: GNSS state, speed, recording, battery
-    constexpr int kTopBarH = 20;
-    canvas.fillRect(0, 0, app::kW, kTopBarH, 0x0000);
+    // Top bar: GNSS state, speed, recording, battery; second line street name when downloaded
+    char street[64];
+    const nav::LatLon here = (follow_ && fix.valid) ? nav::LatLon{fix.lat, fix.lon} : center_;
+    const int streetState = streetdata::lookup(here, street, sizeof street);
+    const int topBarH = streetState >= 0 ? 32 : 20;
+    canvas.fillRect(0, 0, app::kW, topBarH, 0x0000);
     uint16_t c = ui::kGood;
     if (!app::gps.receivingData()) {
         snprintf(left, sizeof left, "NO GNSS DATA");
@@ -244,14 +248,35 @@ void MapView::drawStatus() {
     snprintf(right, sizeof right, "%sZ%d%s %s", app::navdata.recording() ? "REC " : "", zoom_, follow_ ? " F" : "",
              bat >= 0 ? (String(bat) + "%").c_str() : "");
     canvas.setTextSize(1);
-    canvas.setFont(&fonts::Font2);
-    if (canvas.textWidth(left) + canvas.textWidth(right) + 8 > app::kW - 4) canvas.setFont(&fonts::Font0);
-    canvas.setTextColor(c);
-    canvas.setTextDatum(middle_left);
-    canvas.drawString(left, 2, kTopBarH / 2);
-    canvas.setTextColor(app::navdata.recording() ? ui::kBad : ui::kFg);
-    canvas.setTextDatum(middle_right);
-    canvas.drawString(right, app::kW - 2, kTopBarH / 2);
+    const uint16_t rightColor = app::navdata.recording() ? ui::kBad : ui::kFg;
+    if (streetState >= 0) {
+        canvas.setFont(&fonts::Font0);
+        canvas.setTextColor(c);
+        canvas.setTextDatum(top_left);
+        canvas.drawString(left, 2, 1);
+        canvas.setTextColor(rightColor);
+        canvas.setTextDatum(top_right);
+        canvas.drawString(right, app::kW - 2, 1);
+        canvas.setFont(&fonts::Font2);
+        String label = streetState > 0 ? String(street) : String("-");
+        if (canvas.textWidth(label.c_str()) > app::kW - 4) {
+            while (label.length() > 1 && canvas.textWidth((label + "...").c_str()) > app::kW - 4)
+                label.remove(label.length() - 1);
+            label += "...";
+        }
+        canvas.setTextColor(streetState > 0 ? ui::kFg : ui::kDim);
+        canvas.setTextDatum(middle_center);
+        canvas.drawString(label.c_str(), app::kW / 2, 21);
+    } else {
+        canvas.setFont(&fonts::Font2);
+        if (canvas.textWidth(left) + canvas.textWidth(right) + 8 > app::kW - 4) canvas.setFont(&fonts::Font0);
+        canvas.setTextColor(c);
+        canvas.setTextDatum(middle_left);
+        canvas.drawString(left, 2, topBarH / 2);
+        canvas.setTextColor(rightColor);
+        canvas.setTextDatum(middle_right);
+        canvas.drawString(right, app::kW - 2, topBarH / 2);
+    }
     canvas.setFont(&fonts::Font0);
     canvas.setTextDatum(top_left);
 

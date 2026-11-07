@@ -1,5 +1,6 @@
 #include <geo.h>
 #include <gpx.h>
+#include <streets.h>
 #include <tilesource.h>
 #include <unity.h>
 
@@ -150,6 +151,131 @@ static void test_gpx_write_roundtrip() {
     TEST_ASSERT_DOUBLE_WITHIN(1e-7, -122.7654321, pts[0].lon);
 }
 
+using Bytes = std::vector<uint8_t>;
+static void pbVarint(Bytes &b, uint64_t v) {
+    while (v >= 0x80) {
+        b.push_back(uint8_t(v | 0x80));
+        v >>= 7;
+    }
+    b.push_back(uint8_t(v));
+}
+static void pbKey(Bytes &b, uint32_t num, uint32_t wire) { pbVarint(b, (num << 3) | wire); }
+static void pbBytes(Bytes &b, uint32_t num, const Bytes &d) {
+    pbKey(b, num, 2);
+    pbVarint(b, d.size());
+    b.insert(b.end(), d.begin(), d.end());
+}
+static void pbStr(Bytes &b, uint32_t num, const char *s) { pbBytes(b, num, Bytes(s, s + strlen(s))); }
+static uint32_t zz(int32_t v) { return uint32_t(v << 1) ^ uint32_t(v >> 31); }
+static Bytes packed(std::initializer_list<uint32_t> v) {
+    Bytes b;
+    for (auto x : v) pbVarint(b, x);
+    return b;
+}
+static Bytes feature(uint64_t type, const Bytes &tags, const Bytes &geom) {
+    Bytes f;
+    pbBytes(f, 2, tags);
+    pbKey(f, 3, 0);
+    pbVarint(f, type);
+    pbBytes(f, 4, geom);
+    return f;
+}
+static void pbValue(Bytes &layer, const char *s) {
+    Bytes v;
+    pbStr(v, 1, s);
+    pbBytes(layer, 4, v);
+}
+struct VecSink : nav::ByteSink {
+    Bytes d;
+    bool write(const uint8_t *b, size_t n) override {
+        d.insert(d.end(), b, b + n);
+        return true;
+    }
+};
+
+static Bytes sampleTile() {
+    Bytes water;
+    pbStr(water, 1, "water");
+    pbBytes(water, 2, feature(3, packed({0, 0}), packed({9, zz(1), zz(1), 18, zz(5), zz(0), zz(0), zz(5), 15})));
+    pbStr(water, 3, "name");
+    pbValue(water, "Lake");
+    pbKey(water, 5, 0);
+    pbVarint(water, 4096);
+
+    Bytes tn;
+    pbStr(tn, 1, "transportation_name");
+    pbBytes(tn, 2, feature(2, packed({0, 0, 1, 1}), packed({9, zz(100), zz(100), 18, zz(400), zz(0), zz(0), zz(400)})));
+    pbBytes(tn, 2, feature(2, packed({1, 2}), packed({9, zz(1000), zz(1000), 10, zz(0), zz(1000)})));
+    pbBytes(tn, 2, feature(1, packed({1, 1}), packed({9, zz(5), zz(5)})));
+    pbBytes(tn, 2, feature(2, packed({0, 0}), packed({9, zz(10), zz(10), 10, zz(50), zz(0)})));
+    pbBytes(tn, 2, feature(2, packed({1, 3, 2, 4}), packed({9, zz(3000), zz(3000), 10, zz(500), zz(0)})));
+    pbStr(tn, 3, "class");
+    pbStr(tn, 3, "name");
+    pbStr(tn, 3, "name:latin");
+    pbValue(tn, "primary");
+    pbValue(tn, "Main Street");
+    pbValue(tn, "Caf\xc3\xa9 \xc3\x9cnter");
+    pbValue(tn, "\xd0\x9c\xd0\xbe\xd1\x81\xd0\xba\xd0\xb2\xd0\xb0");
+    pbValue(tn, "Moskva");
+    pbKey(tn, 5, 0);
+    pbVarint(tn, 4096);
+
+    Bytes tile;
+    pbBytes(tile, 3, water);
+    pbBytes(tile, 3, tn);
+    return tile;
+}
+
+void test_mvt_streets() {
+    const Bytes tile = sampleTile();
+    nav::MemSource src(tile.data(), tile.size());
+    VecSink out;
+    TEST_ASSERT_EQUAL_INT(3, nav::convertMvtStreets(src, out));
+
+    nav::MemSource streets(out.d.data(), out.d.size());
+    char name[64];
+    double dist = 0;
+    TEST_ASSERT_TRUE(nav::nearestStreet(streets, 300 / 4096.0, 110 / 4096.0, name, sizeof name, dist));
+    TEST_ASSERT_EQUAL_STRING("Main Street", name);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-6, 10 / 4096.0, dist);
+    TEST_ASSERT_TRUE(nav::nearestStreet(streets, 1010 / 4096.0, 1500 / 4096.0, name, sizeof name, dist));
+    TEST_ASSERT_EQUAL_STRING("Cafe Unter", name);
+    TEST_ASSERT_TRUE(nav::nearestStreet(streets, 3200 / 4096.0, 3010 / 4096.0, name, sizeof name, dist));
+    TEST_ASSERT_EQUAL_STRING("Moskva", name);
+
+    VecSink bad;
+    nav::MemSource truncated(tile.data(), tile.size() - 3);
+    TEST_ASSERT_EQUAL_INT(-1, nav::convertMvtStreets(truncated, bad));
+
+    VecSink empty;
+    nav::MemSource none(tile.data(), 0);
+    TEST_ASSERT_EQUAL_INT(0, nav::convertMvtStreets(none, empty));
+    nav::MemSource emptyStreets(empty.d.data(), empty.d.size());
+    TEST_ASSERT_FALSE(nav::nearestStreet(emptyStreets, 0.5, 0.5, name, sizeof name, dist));
+}
+
+void test_ascii_fold_and_street_paths() {
+    char out[32];
+    const char *s1 = "Stra\xc3\x9f" "e";
+    nav::asciiFold(s1, strlen(s1), out, sizeof out);
+    TEST_ASSERT_EQUAL_STRING("Strasse", out);
+    const char *s2 = "\xc5\x81\xc3\xb3" "d\xc5\xba";
+    nav::asciiFold(s2, strlen(s2), out, sizeof out);
+    TEST_ASSERT_EQUAL_STRING("Lodz", out);
+    const char *s3 = "Rue de l\xe2\x80\x99" "Eglise";
+    nav::asciiFold(s3, strlen(s3), out, sizeof out);
+    TEST_ASSERT_EQUAL_STRING("Rue de l'Eglise", out);
+    nav::asciiFold("abcdef", 6, out, 4);
+    TEST_ASSERT_EQUAL_STRING("abc", out);
+
+    char buf[160];
+    TEST_ASSERT_TRUE(nav::buildStreetUrl("abc", 14, 1, 2, buf, sizeof buf));
+    TEST_ASSERT_EQUAL_STRING("https://api.maptiler.com/tiles/v3-openmaptiles/14/1/2.pbf?key=abc", buf);
+    TEST_ASSERT_FALSE(nav::buildStreetUrl("a/b", 14, 1, 2, buf, sizeof buf));
+    TEST_ASSERT_TRUE(nav::buildStreetPath("/gpsnav/streets", 14, 1, 2, buf, sizeof buf));
+    TEST_ASSERT_EQUAL_STRING("/gpsnav/streets/14/1/2.bin", buf);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_world_px_roundtrip);
@@ -161,5 +287,7 @@ int main() {
     RUN_TEST(test_tile_urls_and_paths);
     RUN_TEST(test_gpx_parse);
     RUN_TEST(test_gpx_write_roundtrip);
+    RUN_TEST(test_mvt_streets);
+    RUN_TEST(test_ascii_fold_and_street_paths);
     return UNITY_END();
 }
