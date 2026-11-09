@@ -334,6 +334,47 @@ bool downloadRegion(const Region &r) {
         ui::present();
     };
 
+    // Street data first: it is small, and a long map download may be cancelled part way.
+    uint32_t streetOk = 0, streetFailed = 0;
+    String streetNote;
+    for (int x = sr.x0; wantStreets && x <= sr.x1 && !abortReason.length() && !streetNote.length(); ++x) {
+        if (nav::buildStreetDir(storage::kStreetsRoot, nav::kStreetZoom, x, dir, sizeof dir)) storage::mkdirs(dir);
+        for (int y = sr.y0; y <= sr.y1; ++y) {
+            app::service();
+            if (cancelRequested() && ui::confirm("Cancel download?", "Tiles fetched so far are kept.")) {
+                abortReason = "Cancelled.";
+                break;
+            }
+            if (!nav::buildStreetPath(storage::kStreetsRoot, nav::kStreetZoom, x, y, path, sizeof path)) {
+                abortReason = "Street data path too long.";
+                break;
+            }
+            if (SD.exists(path)) {
+                ++skipped;
+                ++streetOk;
+            } else {
+                switch (fetchStreetTile(http, client, x, y, path, lastCode)) {
+                    case FetchResult::Ok: ++ok; ++streetOk; break;
+                    case FetchResult::NotFound: ++missing; ++streetOk; break;
+                    case FetchResult::AuthError:
+                        streetNote = "Street names skipped: MapTiler refused the street data (HTTP " +
+                                     String(lastCode) + ").";
+                        break;
+                    case FetchResult::Failed:
+                        ++failed;
+                        ++streetFailed;
+                        if (WiFi.status() != WL_CONNECTED && !wifiConnect()) abortReason = "WiFi lost.";
+                        break;
+                }
+                if (abortReason.length() || streetNote.length()) break;
+            }
+            ++done;
+            if (millis() - lastDraw > 250) {
+                lastDraw = millis();
+                draw(-1);
+            }
+        }
+    }
     for (int z = r.zMin; z <= r.zMax && !abortReason.length(); ++z) {
         const nav::TileRange tr = nav::tileRangeFor(r.box, z);
         for (int x = tr.x0; x <= tr.x1 && !abortReason.length(); ++x) {
@@ -375,44 +416,10 @@ bool downloadRegion(const Region &r) {
             }
         }
     }
-    String streetNote;
-    for (int x = sr.x0; wantStreets && x <= sr.x1 && !abortReason.length() && !streetNote.length(); ++x) {
-        if (nav::buildStreetDir(storage::kStreetsRoot, nav::kStreetZoom, x, dir, sizeof dir)) storage::mkdirs(dir);
-        for (int y = sr.y0; y <= sr.y1; ++y) {
-            app::service();
-            if (cancelRequested() && ui::confirm("Cancel download?", "Tiles fetched so far are kept.")) {
-                abortReason = "Cancelled.";
-                break;
-            }
-            if (!nav::buildStreetPath(storage::kStreetsRoot, nav::kStreetZoom, x, y, path, sizeof path)) {
-                abortReason = "Street data path too long.";
-                break;
-            }
-            if (SD.exists(path)) {
-                ++skipped;
-            } else {
-                switch (fetchStreetTile(http, client, x, y, path, lastCode)) {
-                    case FetchResult::Ok: ++ok; break;
-                    case FetchResult::NotFound: ++missing; break;
-                    case FetchResult::AuthError:
-                        streetNote = "Street names skipped: MapTiler refused the street data (HTTP " +
-                                     String(lastCode) + ").";
-                        break;
-                    case FetchResult::Failed:
-                        ++failed;
-                        if (WiFi.status() != WL_CONNECTED && !wifiConnect()) abortReason = "WiFi lost.";
-                        break;
-                }
-                if (abortReason.length() || streetNote.length()) break;
-            }
-            ++done;
-            if (millis() - lastDraw > 250) {
-                lastDraw = millis();
-                draw(-1);
-            }
-        }
-    }
     if (!wantStreets) streetNote = "Street names in the top bar need a MapTiler key.";
+    else if (!streetNote.length())
+        streetNote = "Street names: " + String(streetOk) + " of " + String(streetTotal) + " areas" +
+                     (streetFailed ? ", " + String(streetFailed) + " failed." : ".");
     http.end();
     client.stop();
     wifiOff();
@@ -421,7 +428,8 @@ bool downloadRegion(const Region &r) {
     snprintf(summary, sizeof summary, "%lu new, %lu already cached, %lu failed, %lu unavailable.",
              (unsigned long)ok, (unsigned long)skipped, (unsigned long)failed, (unsigned long)missing);
     if (abortReason.length()) {
-        ui::message("Download stopped", abortReason + "\n\n" + summary);
+        ui::message("Download stopped", abortReason + "\n\n" + summary +
+                                               (streetNote.length() ? "\n" + streetNote : String()));
         return false;
     }
     ui::message("Download complete", String(summary) + (failed ? "\n\nRun it again to retry failed tiles." : "") +

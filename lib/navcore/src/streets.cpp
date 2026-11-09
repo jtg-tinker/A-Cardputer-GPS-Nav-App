@@ -175,9 +175,23 @@ bool writeGeometry(ByteSource &src, size_t start, size_t len, const char *name, 
     return w.part(name, pts);
 }
 
+bool isStreetLayer(ByteSource &src, size_t start, size_t len) {
+    // Only reads up to the name (usually the first field), so other layers are skipped cheaply.
+    Cursor c(src, start, start + len);
+    uint32_t num, wire;
+    while (!c.done()) {
+        if (!c.field(num, wire)) return false;
+        size_t s, l;
+        if (num == 1 && wire == 2) return c.lenDelim(s, l) && spanEquals(src, s, l, "transportation_name");
+        if (!c.skipValue(wire)) return false;
+    }
+    return false;
+}
+
 int processLayer(ByteSource &src, size_t start, size_t len, StreetWriter &w) {
-    // Pass 1: layer name, keys, string values, extent.
-    bool isTarget = false;
+    if (!isStreetLayer(src, start, len)) return 0;
+    // Pass 1: keys, string values, extent.
+    bool isTarget = true;
     int nameKey = -1, latinKey = -1, keyIdx = 0;
     uint64_t extent = 4096;
     std::vector<Span> values;
@@ -187,10 +201,7 @@ int processLayer(ByteSource &src, size_t start, size_t len, StreetWriter &w) {
         while (!c.done()) {
             if (!c.field(num, wire)) return -1;
             size_t s, l;
-            if (num == 1 && wire == 2) {
-                if (!c.lenDelim(s, l)) return -1;
-                isTarget = spanEquals(src, s, l, "transportation_name");
-            } else if (num == 3 && wire == 2) {
+            if (num == 3 && wire == 2) {
                 if (!c.lenDelim(s, l)) return -1;
                 if (spanEquals(src, s, l, "name")) nameKey = keyIdx;
                 else if (spanEquals(src, s, l, "name:latin")) latinKey = keyIdx;
