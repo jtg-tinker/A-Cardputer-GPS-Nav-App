@@ -372,6 +372,36 @@ bool nearestStreet(ByteSource &streets, double fx, double fy, char *name, size_t
     return true;
 }
 
+bool forEachStreet(ByteSource &streets, StreetLineFn cb, void *ctx) {
+    uint8_t h[kHeaderSize];
+    if (streets.size() < kHeaderSize || !streets.read(0, h, kHeaderSize) || memcmp(h, kMagic, 4) != 0) return false;
+    const uint16_t extent = uint16_t(h[4] | (h[5] << 8));
+    if (extent == 0) return false;
+    Cursor c(streets, kHeaderSize, streets.size());
+    auto rd16 = [&](int16_t &v) {
+        uint8_t lo, hi;
+        if (!c.byte(lo) || !c.byte(hi)) return false;
+        v = int16_t(uint16_t(lo | (hi << 8)));
+        return true;
+    };
+    std::vector<int16_t> pts;
+    while (!c.done()) {
+        uint8_t nl;
+        char name[kMaxName + 1];
+        if (!c.byte(nl) || nl > kMaxName) return false;
+        for (uint8_t i = 0; i < nl; ++i)
+            if (!c.byte(reinterpret_cast<uint8_t &>(name[i]))) return false;
+        name[nl] = 0;
+        int16_t np;
+        if (!rd16(np)) return false;
+        pts.resize(size_t(uint16_t(np)) * 2);
+        for (auto &v : pts)
+            if (!rd16(v)) return false;
+        cb(ctx, name, pts.data(), pts.size() / 2, extent);
+    }
+    return true;
+}
+
 void asciiFold(const char *utf8, size_t len, char *out, size_t n) {
     static const char *const kLatin1[64] = {
         "A", "A", "A", "A", "A", "A", "AE", "C", "E", "E", "E", "E", "I", "I", "I",  "I",

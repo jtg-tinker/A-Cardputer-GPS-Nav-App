@@ -14,6 +14,7 @@ private:
     void handleKey();
     void renderBase();
     void drawTile(int z, int x, int y, int dx, int dy);
+    void drawStreetLines();
     void drawOverlays();
     void drawStatus();
     bool toScreen(const nav::LatLon &ll, int &sx, int &sy) const;
@@ -31,6 +32,9 @@ private:
     uint32_t lastPersist_ = 0;
     bool viewChanged_ = false;
     bool arrivedShown_ = false;
+    bool upscaled_ = false;  // some visible tiles are enlarged from a lower zoom
+    int streetState_ = -1;
+    char street_[64] = {0};
 };
 
 extern MapView mapView;

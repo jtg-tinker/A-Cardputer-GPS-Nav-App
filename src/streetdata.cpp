@@ -14,7 +14,7 @@ namespace streetdata {
 
 namespace {
 
-constexpr double kMaxStreetDistM = 50;
+constexpr double kMaxStreetDistM = 25;
 constexpr size_t kMaxConvertInMemory = 96 * 1024;
 constexpr size_t kMaxLookupInMemory = 24 * 1024;
 
@@ -172,38 +172,109 @@ bool convertDownloaded(const char *pbfPath, const char *binPath) {
     return ok;
 }
 
+namespace {
+
+Highlight hl;
+
+bool queryFile(const char *path, double fx, double fy, char *found, size_t n, double &dist) {
+    File f = SD.open(path, FILE_READ);
+    if (!f) return false;
+    FileSource src(f);
+    const bool hit = nav::nearestStreet(src, fx, fy, found, n, dist);
+    f.close();
+    return hit;
+}
+
+void collectHighlight(int tx, int ty, const char *name) {
+    hl = Highlight();
+    hl.tx = tx;
+    hl.ty = ty;
+    snprintf(hl.name, sizeof hl.name, "%s", name);
+    forEachLine(
+        tx, ty,
+        [](void *, const char *nm, const int16_t *xy, size_t np, uint16_t extent) {
+            if (strcmp(nm, hl.name)) return;
+            hl.extent = extent;
+            hl.lines.emplace_back(xy, xy + np * 2);
+        },
+        nullptr);
+}
+
+}  // namespace
+
 int lookup(const nav::LatLon &p, char *name, size_t n) {
     if (n) name[0] = 0;
     const nav::WorldPx w = nav::latLonToWorldPx(p.lat, p.lon, nav::kStreetZoom);
     const int tx = int(floor(w.x / 256)), ty = int(floor(w.y / 256));
     const double fx = w.x / 256 - tx, fy = w.y / 256 - ty;
     if (tx != cache.tx || ty != cache.ty) loadTile(tx, ty);
-    if (!cache.exists) return -1;
+    if (!cache.exists) {
+        hl = Highlight();
+        return -1;
+    }
     if (!cache.queried || fabs(fx - cache.fx) > 1e-3 || fabs(fy - cache.fy) > 1e-3) {
-        char found[64] = {0};
-        double dist = 0;
+        const double tileM = 2 * M_PI * nav::kEarthRadiusM * cos(p.lat * DEG_TO_RAD) / double(1 << nav::kStreetZoom);
+        const double margin = kMaxStreetDistM / tileM;
+        char best[64] = {0}, found[64];
+        double bestDist = INFINITY, dist = 0;
+        int bestTx = tx, bestTy = ty;
         bool hit;
         if (cache.data) {
             nav::MemSource src(cache.data.get(), cache.len);
             hit = nav::nearestStreet(src, fx, fy, found, sizeof found, dist);
         } else {
-            File f = SD.open(cache.path, FILE_READ);
-            if (!f) return -1;
-            FileSource src(f);
-            hit = nav::nearestStreet(src, fx, fy, found, sizeof found, dist);
-            f.close();
+            hit = queryFile(cache.path, fx, fy, found, sizeof found, dist);
         }
-        const double tileM = 2 * M_PI * nav::kEarthRadiusM * cos(p.lat * DEG_TO_RAD) / double(1 << nav::kStreetZoom);
+        if (hit) {
+            bestDist = dist;
+            snprintf(best, sizeof best, "%s", found);
+        }
+        // Streets just across a tile border are stored in the neighbouring tile.
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (!dx && !dy) continue;
+                const bool nearX = dx < 0 ? fx < margin : dx > 0 ? fx > 1 - margin : true;
+                const bool nearY = dy < 0 ? fy < margin : dy > 0 ? fy > 1 - margin : true;
+                char path[96];
+                if (!nearX || !nearY ||
+                    !nav::buildStreetPath(storage::kStreetsRoot, nav::kStreetZoom, tx + dx, ty + dy, path, sizeof path))
+                    continue;
+                if (queryFile(path, fx - dx, fy - dy, found, sizeof found, dist) && dist < bestDist) {
+                    bestDist = dist;
+                    bestTx = tx + dx;
+                    bestTy = ty + dy;
+                    snprintf(best, sizeof best, "%s", found);
+                }
+            }
+        }
         cache.queried = true;
         cache.fx = fx;
         cache.fy = fy;
-        cache.result = hit && dist * tileM <= kMaxStreetDistM ? 1 : 0;
-        snprintf(cache.name, sizeof cache.name, "%s", cache.result ? found : "");
+        cache.result = bestDist * tileM <= kMaxStreetDistM ? 1 : 0;
+        snprintf(cache.name, sizeof cache.name, "%s", cache.result ? best : "");
+        if (!cache.result) hl = Highlight();
+        else if (strcmp(hl.name, best) || hl.tx != bestTx || hl.ty != bestTy) collectHighlight(bestTx, bestTy, best);
     }
     if (n) snprintf(name, n, "%s", cache.name);
     return cache.result;
 }
 
-void invalidate() { cache = Cache(); }
+bool forEachLine(int tx, int ty, nav::StreetLineFn cb, void *ctx) {
+    char path[96];
+    if (!nav::buildStreetPath(storage::kStreetsRoot, nav::kStreetZoom, tx, ty, path, sizeof path)) return false;
+    File f = SD.open(path, FILE_READ);
+    if (!f) return false;
+    FileSource src(f);
+    const bool ok = nav::forEachStreet(src, cb, ctx);
+    f.close();
+    return ok;
+}
+
+const Highlight &highlight() { return hl; }
+
+void invalidate() {
+    cache = Cache();
+    hl = Highlight();
+}
 
 }  // namespace streetdata
