@@ -376,6 +376,7 @@ bool forEachStreet(ByteSource &streets, StreetLineFn cb, void *ctx) {
     uint8_t h[kHeaderSize];
     if (streets.size() < kHeaderSize || !streets.read(0, h, kHeaderSize) || memcmp(h, kMagic, 4) != 0) return false;
     const uint16_t extent = uint16_t(h[4] | (h[5] << 8));
+    if (extent == 0) return false;
     Cursor c(streets, kHeaderSize, streets.size());
     auto rd16 = [&](int16_t &v) {
         uint8_t lo, hi;
