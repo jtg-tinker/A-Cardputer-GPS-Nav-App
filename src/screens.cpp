@@ -122,7 +122,7 @@ bool planAndDownload(Region r) {
     net::saveRegions(regions);
 
     const bool done = net::downloadRegion(r);
-    if (done) app::requestCenter((r.box.north + r.box.south) / 2, (r.box.east + r.box.west) / 2, min(r.zMax, 14));
+    if (done) app::requestCenter((r.box.north + r.box.south) / 2, (r.box.east + r.box.west) / 2, min(r.zMax, 16));
     return done;
 }
 

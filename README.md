@@ -24,7 +24,9 @@ If flashing won't start, hold **G0** while you plug in USB to enter download mod
 2. Open **Menu → Settings**. Choose a tile provider, enter your API key, then set up WiFi.
 3. Open **Menu → Download maps**. Choose an area: around your GPS position, around the map center, a place search (Nominatim), or coordinates you enter. Pick a radius (1–100 km) and a max detail level (z10–z18; z16 shows streets). The screen shows the tile count and estimated size before the download starts.
 
-   With a MapTiler key the download also fetches MapTiler street data (vector tiles at z14) for the same area. Afterwards the top bar gets a second line showing the nearest named street (within 50 m) at your GPS position, or at the crosshair while you pan. A "-" means there is street data but no named street nearby. Thunderforest downloads don't include street data.
+   With a MapTiler key the download also fetches MapTiler street data (vector tiles at z14) for the same area. Afterwards the top bar gets a second line showing the nearest named street (within 50 m) at your GPS position, or at the crosshair while you pan. A "-" means there is street data but no named street within 25 m. From z16 up, the street-data lines are drawn on the map in thin green, and the street named in the bar is highlighted in yellow. Thunderforest downloads don't include street data.
+
+   A "~" after the zoom level (e.g. `Z16~`) means part of the screen is an enlarged lower-zoom tile because that tile wasn't downloaded, so small streets may be missing there.
 4. If a download is interrupted, open **Download maps → Saved regions** and choose resume. Tiles you already have are skipped.
 
 ## Map keys

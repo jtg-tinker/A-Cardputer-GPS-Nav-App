@@ -22,6 +22,9 @@ constexpr uint16_t kRouteColor = 0xF81F;
 constexpr uint16_t kTrackColor = 0xFC00;
 constexpr uint16_t kTargetColor = 0x07FF;
 constexpr uint16_t kPosColor = 0x041F;
+constexpr uint16_t kStreetColor = 0x07E0;
+constexpr uint16_t kStreetHlColor = 0xFFE0;
+constexpr int kStreetOverlayZoom = 16;
 }  // namespace
 
 void MapView::begin(double lat, double lon, int zoom) {
@@ -83,6 +86,7 @@ void MapView::drawTile(int z, int x, int y, int dx, int dy) {
         return;
     }
     // Missing tile: upscale the closest downloaded ancestor.
+    upscaled_ = true;
     base.setClipRect(dx, dy, nav::kTileSize, nav::kTileSize);
     bool drawn = false;
     for (int k = 1; k <= 5 && z - k >= 0 && !drawn; ++k) {
@@ -114,10 +118,52 @@ void MapView::renderBase() {
     const int ty0 = int(floor(originY_ / nav::kTileSize));
     const int tx1 = int(floor((originX_ + app::kW - 1) / nav::kTileSize));
     const int ty1 = int(floor((originY_ + app::kH - 1) / nav::kTileSize));
+    upscaled_ = false;
     for (int ty = ty0; ty <= ty1; ++ty)
         for (int tx = tx0; tx <= tx1; ++tx)
             drawTile(zoom_, tx, ty, int(tx * nav::kTileSize - originX_), int(ty * nav::kTileSize - originY_));
+    if (zoom_ >= kStreetOverlayZoom) drawStreetLines();
     baseDirty_ = false;
+}
+
+namespace {
+
+// Draws street lines given in z14 tile units onto a canvas; (ox, oy) is the tile's top-left on screen.
+struct LineCtx {
+    M5Canvas *dst;
+    double ox, oy, tilePx;
+    uint16_t color;
+    float width;
+};
+
+void drawStreetLine(void *p, const char *, const int16_t *xy, size_t n, uint16_t extent) {
+    const auto &c = *static_cast<LineCtx *>(p);
+    const double k = c.tilePx / extent;
+    int px = 0, py = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const int x = int(lround(c.ox + xy[2 * i] * k)), y = int(lround(c.oy + xy[2 * i + 1] * k));
+        if (i > 0 && (x != px || y != py)) {
+            const bool visible = !((x < 0 && px < 0) || (y < 0 && py < 0) || (x >= app::kW && px >= app::kW) ||
+                                   (y >= app::kH && py >= app::kH));
+            if (visible) c.dst->drawWideLine(px, py, x, y, c.width, c.color);
+        }
+        px = x;
+        py = y;
+    }
+}
+
+}  // namespace
+
+void MapView::drawStreetLines() {
+    const double tilePx = nav::kTileSize * double(1 << (zoom_ - nav::kStreetZoom));
+    const int tx0 = int(floor(originX_ / tilePx)), tx1 = int(floor((originX_ + app::kW - 1) / tilePx));
+    const int ty0 = int(floor(originY_ / tilePx)), ty1 = int(floor((originY_ + app::kH - 1) / tilePx));
+    for (int ty = ty0; ty <= ty1; ++ty) {
+        for (int tx = tx0; tx <= tx1; ++tx) {
+            LineCtx c{&base, tx * tilePx - originX_, ty * tilePx - originY_, tilePx, kStreetColor, 1.5f};
+            streetdata::forEachLine(tx, ty, &drawStreetLine, &c);
+        }
+    }
 }
 
 static void drawPolyline(MapView &mv, const std::vector<nav::LatLon> &pts, uint16_t color, float width,
@@ -139,6 +185,16 @@ static void drawPolyline(MapView &mv, const std::vector<nav::LatLon> &pts, uint1
 }
 
 void MapView::drawOverlays() {
+    const GpsFix sfix = app::gps.fix();
+    const nav::LatLon here = (follow_ && sfix.valid) ? nav::LatLon{sfix.lat, sfix.lon} : center_;
+    streetState_ = streetdata::lookup(here, street_, sizeof street_);
+    if (streetState_ > 0 && zoom_ >= kStreetOverlayZoom) {
+        const auto &h = streetdata::highlight();
+        const double tilePx = nav::kTileSize * double(1 << (zoom_ - nav::kStreetZoom));
+        LineCtx c{&canvas, h.tx * tilePx - originX_, h.ty * tilePx - originY_, tilePx, kStreetHlColor, 3.0f};
+        for (const auto &l : h.lines) drawStreetLine(&c, nullptr, l.data(), l.size() / 2, h.extent);
+    }
+
     auto &nd = app::navdata;
     if (nd.hasRoute()) drawPolyline(*this, nd.route, kRouteColor, 1.6f, &MapView::toScreen);
     if (!nd.breadcrumb.empty()) drawPolyline(*this, nd.breadcrumb, kTrackColor, 1.0f, &MapView::toScreen);
@@ -227,9 +283,8 @@ void MapView::drawStatus() {
     const GpsFix fix = app::gps.fix();
     char left[48], right[40];
     // Top bar: GNSS state, speed, recording, battery; second line street name when downloaded
-    char street[64];
-    const nav::LatLon here = (follow_ && fix.valid) ? nav::LatLon{fix.lat, fix.lon} : center_;
-    const int streetState = streetdata::lookup(here, street, sizeof street);
+    const int streetState = streetState_;
+    const char *street = street_;
     const int topBarH = streetState >= 0 ? 32 : 20;
     canvas.fillRect(0, 0, app::kW, topBarH, 0x0000);
     uint16_t c = ui::kGood;
@@ -245,7 +300,8 @@ void MapView::drawStatus() {
         snprintf(left, sizeof left, "Sat:%lu %s", (unsigned long)fix.sats, spd);
     }
     const int bat = M5Cardputer.Power.getBatteryLevel();
-    snprintf(right, sizeof right, "%sZ%d%s %s", app::navdata.recording() ? "REC " : "", zoom_, follow_ ? " F" : "",
+    snprintf(right, sizeof right, "%sZ%d%s%s %s", app::navdata.recording() ? "REC " : "", zoom_, upscaled_ ? "~" : "",
+             follow_ ? " F" : "",
              bat >= 0 ? (String(bat) + "%").c_str() : "");
     canvas.setTextSize(1);
     const uint16_t rightColor = app::navdata.recording() ? ui::kBad : ui::kFg;

@@ -243,6 +243,29 @@ void test_mvt_streets() {
     TEST_ASSERT_TRUE(nav::nearestStreet(streets, 3200 / 4096.0, 3010 / 4096.0, name, sizeof name, dist));
     TEST_ASSERT_EQUAL_STRING("Moskva", name);
 
+    struct Count {
+        int lines = 0;
+        size_t points = 0;
+        bool sawMain = false;
+    } count;
+    TEST_ASSERT_TRUE(nav::forEachStreet(
+        streets,
+        [](void *ctx, const char *nm, const int16_t *xy, size_t np, uint16_t extent) {
+            auto &c = *static_cast<Count *>(ctx);
+            ++c.lines;
+            c.points += np;
+            if (!strcmp(nm, "Main Street")) {
+                c.sawMain = true;
+                TEST_ASSERT_EQUAL_INT(4096, extent);
+                TEST_ASSERT_EQUAL_INT(500, xy[2]);
+                TEST_ASSERT_EQUAL_INT(500, xy[5]);
+            }
+        },
+        &count));
+    TEST_ASSERT_EQUAL_INT(3, count.lines);
+    TEST_ASSERT_EQUAL_UINT32(7, count.points);
+    TEST_ASSERT_TRUE(count.sawMain);
+
     VecSink bad;
     nav::MemSource truncated(tile.data(), tile.size() - 3);
     TEST_ASSERT_EQUAL_INT(-1, nav::convertMvtStreets(truncated, bad));

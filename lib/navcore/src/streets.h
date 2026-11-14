@@ -52,6 +52,11 @@ int convertMvtStreets(ByteSource &mvt, ByteSink &out);
 // tile widths. Returns false if the file is invalid or has no streets.
 bool nearestStreet(ByteSource &streets, double fx, double fy, char *name, size_t n, double &dist);
 
+// Calls cb for every street line in a compact street file; xy holds npts (x, y) pairs in tile units.
+// Returns false if the file is invalid.
+using StreetLineFn = void (*)(void *ctx, const char *name, const int16_t *xy, size_t npts, uint16_t extent);
+bool forEachStreet(ByteSource &streets, StreetLineFn cb, void *ctx);
+
 // UTF-8 to printable ASCII for the built-in fonts (Latin accents folded, e.g. "Straße" -> "Strasse").
 void asciiFold(const char *utf8, size_t len, char *out, size_t n);
 
