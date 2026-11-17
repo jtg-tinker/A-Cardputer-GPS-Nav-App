@@ -145,8 +145,25 @@ bool NavData::loadRoute(const String &path, String &err) {
     route.swap(pts);
     route.shrink_to_fit();
     routeName = path.substring(path.lastIndexOf('/') + 1);
+    routeFromMap = false;
+    clearRoutePoints();
     rebuildRouteDistances();
     return true;
+}
+
+void NavData::setRoute(std::vector<nav::LatLon> &&pts, const String &name) {
+    if (pts.size() > kMaxRoutePoints) {
+        const size_t stride = (pts.size() + kMaxRoutePoints - 1) / kMaxRoutePoints;
+        size_t j = 0;
+        for (size_t i = 0; i < pts.size(); i += stride) pts[j++] = pts[i];
+        pts[j - 1] = pts.back();
+        pts.resize(j);
+    }
+    route = std::move(pts);
+    route.shrink_to_fit();
+    routeName = name;
+    routeFromMap = true;
+    rebuildRouteDistances();
 }
 
 void NavData::reverseRoute() {
@@ -160,6 +177,7 @@ void NavData::clearRoute() {
     routeCum_.clear();
     routeCum_.shrink_to_fit();
     routeName = "";
+    routeFromMap = false;
 }
 
 void NavData::rebuildRouteDistances() {

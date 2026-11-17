@@ -1,10 +1,15 @@
 #include <geo.h>
 #include <gpx.h>
+#include <roads.h>
 #include <streets.h>
 #include <tilesource.h>
 #include <unity.h>
 
+#include <math.h>
 #include <string.h>
+
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -299,6 +304,168 @@ void test_ascii_fold_and_street_paths() {
     TEST_ASSERT_EQUAL_STRING("/gpsnav/streets/14/1/2.bin", buf);
 }
 
+// --- road graph / routing ---
+static Bytes line2(int x0, int y0, int x1, int y1) {
+    return packed({9, zz(x0), zz(y0), 10, zz(x1 - x0), zz(y1 - y0)});
+}
+static Bytes roadTile() {
+    Bytes t;
+    pbStr(t, 1, "transportation");
+    // keys: class=0 oneway=1 brunnel=2; values: minor=0 primary=1 path=2 int(1)=3 bridge=4
+    pbBytes(t, 2, feature(2, packed({0, 0}), line2(0, 2000, 4096, 2000)));        // minor W-E across the tile
+    pbBytes(t, 2, feature(2, packed({0, 1, 1, 3}), line2(3000, 3500, 3000, 500)));  // primary, oneway north
+    pbBytes(t, 2, feature(2, packed({0, 2}), line2(1000, 1000, 1000, 3000)));     // footpath
+    pbBytes(t, 2, feature(2, packed({0, 0, 2, 4}), line2(500, 1500, 500, 2500)));   // bridge over the minor road
+    pbBytes(t, 2, feature(1, packed({0, 0}), packed({9, zz(5), zz(5)})));         // point: ignored
+    pbStr(t, 3, "class");
+    pbStr(t, 3, "oneway");
+    pbStr(t, 3, "brunnel");
+    pbValue(t, "minor");
+    pbValue(t, "primary");
+    pbValue(t, "path");
+    {
+        Bytes v;
+        pbKey(v, 4, 0);
+        pbVarint(v, 1);
+        pbBytes(t, 4, v);
+    }
+    pbValue(t, "bridge");
+    pbKey(t, 5, 0);
+    pbVarint(t, 4096);
+    Bytes tile;
+    pbBytes(tile, 3, t);
+    return tile;
+}
+
+static constexpr int kRtx = 8192, kRty = 8192;  // z14 tile just south-east of lat 0 / lon 0
+static nav::LatLon tileLL(int tx, double x, double y) {
+    return nav::worldPxToLatLon((tx + x / 4096) * nav::kTileSize, (kRty + y / 4096) * nav::kTileSize, 14);
+}
+struct MapTiles : nav::RoadTiles {
+    std::map<std::pair<int, int>, Bytes> files;
+    std::unique_ptr<nav::MemSource> src;
+    nav::ByteSource *tile(int tx, int ty) override {
+        auto it = files.find({tx, ty});
+        if (it == files.end()) return nullptr;
+        src.reset(new nav::MemSource(it->second.data(), it->second.size()));
+        return src.get();
+    }
+};
+static Bytes roadGraph() {
+    const Bytes mvt = roadTile();
+    nav::MemSource src(mvt.data(), mvt.size());
+    VecSink out;
+    TEST_ASSERT_GREATER_THAN(0, nav::convertMvtRoads(src, out));
+    return out.d;
+}
+static uint16_t le16(const Bytes &b, size_t o) { return uint16_t(b[o] | (b[o + 1] << 8)); }
+static uint32_t le32(const Bytes &b, size_t o) { return le16(b, o) | (uint32_t(le16(b, o + 2)) << 16); }
+
+void test_mvt_roads_parse_and_graph() {
+    const Bytes mvt = roadTile();
+    nav::MemSource src(mvt.data(), mvt.size());
+    nav::RoadLines rl;
+    uint16_t extent = 0;
+    TEST_ASSERT_TRUE(nav::parseMvtRoads(src, rl, extent));
+    const auto &lines = rl.lines;
+    TEST_ASSERT_EQUAL_UINT16(4096, extent);
+    TEST_ASSERT_EQUAL(4, int(lines.size()));
+    TEST_ASSERT_EQUAL_UINT8(nav::kRoadMinor, lines[0].cls);
+    TEST_ASSERT_EQUAL_UINT8(nav::kRoadPrimary, lines[1].cls);
+    TEST_ASSERT_EQUAL_UINT8(nav::kRoadOneway, lines[1].flags);
+    TEST_ASSERT_EQUAL_UINT8(nav::kRoadPath, lines[2].cls);
+    TEST_ASSERT_EQUAL_UINT8(nav::kRoadBrunnel, lines[3].flags);
+    TEST_ASSERT_EQUAL_UINT16(2, lines[1].count);
+    TEST_ASSERT_EQUAL_INT16(3000, rl.pts(lines[1])[0]);
+    TEST_ASSERT_EQUAL_INT16(500, rl.pts(lines[1])[3]);
+
+    const Bytes g = roadGraph();
+    TEST_ASSERT_EQUAL_MEMORY("GNR1", g.data(), 4);
+    TEST_ASSERT_EQUAL_UINT16(4096, le16(g, 4));
+    const uint32_t nn = le16(g, 6), ne = le16(g, 8), nAdj = le32(g, 20), nGeom = le32(g, 24);
+    uint32_t nb = 0;
+    for (int i = 0; i < 4; ++i) nb += le16(g, 10 + 2 * i);
+    TEST_ASSERT_EQUAL_UINT32(2 * ne, nAdj);
+    TEST_ASSERT_EQUAL(int(32 + (nn + 1) * 8 + nAdj * 12 + ne * 22 + nGeom * 4 + nb * 4), int(g.size()));
+    TEST_ASSERT_EQUAL_UINT16(1, le16(g, 10));  // west border node of the minor road
+    TEST_ASSERT_EQUAL_UINT16(1, le16(g, 12));  // east border node
+    // Minor road is split by the primary and path junctions but not by the bridge; endpoints of
+    // the three crossing lines stay dead ends.
+    TEST_ASSERT_EQUAL_UINT32(2 + 2 + 2 + 2 + 2, nn);
+    TEST_ASSERT_EQUAL_UINT32(3 + 2 + 2 + 1, ne);
+
+    const uint8_t junk[] = {1, 2, 3};
+    nav::MemSource bad(junk, sizeof junk);
+    VecSink out;
+    TEST_ASSERT_EQUAL(-1, nav::convertMvtRoads(bad, out));
+}
+
+void test_route_across_tiles_and_errors() {
+    MapTiles tiles;
+    tiles.files[{kRtx, kRty}] = roadGraph();
+    tiles.files[{kRtx + 1, kRty}] = tiles.files[{kRtx, kRty}];
+    nav::RouteOptions opt;
+    nav::RouteResult r;
+    // Along the minor road into the next tile.
+    TEST_ASSERT_EQUAL(int(nav::RouteStatus::Ok),
+                      int(nav::findRoute(tiles, tileLL(kRtx, 1500, 1990), tileLL(kRtx + 1, 750, 2010), opt, r)));
+    const double expect = nav::haversineM(tileLL(kRtx, 1500, 2000), tileLL(kRtx + 1, 750, 2000));
+    TEST_ASSERT_DOUBLE_WITHIN(expect * 0.01, expect, r.lengthM);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-6, tileLL(kRtx, 1500, 2000).lat, r.pts.front().lat);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-6, tileLL(kRtx + 1, 750, 2000).lon, r.pts.back().lon);
+    for (const auto &p : r.pts) TEST_ASSERT_DOUBLE_WITHIN(1e-6, tileLL(kRtx, 0, 2000).lat, p.lat);
+
+    // Same edge, both directions.
+    TEST_ASSERT_EQUAL(int(nav::RouteStatus::Ok),
+                      int(nav::findRoute(tiles, tileLL(kRtx, 2600, 2000), tileLL(kRtx, 2100, 2000), opt, r)));
+    TEST_ASSERT_EQUAL(2, int(r.pts.size()));
+
+    TEST_ASSERT_EQUAL(int(nav::RouteStatus::NoData),
+                      int(nav::findRoute(tiles, tileLL(kRtx + 5, 100, 100), tileLL(kRtx, 1500, 2000), opt, r)));
+    TEST_ASSERT_EQUAL(int(nav::RouteStatus::NoRoadNearEnd),
+                      int(nav::findRoute(tiles, tileLL(kRtx, 1500, 2000), tileLL(kRtx, 2000, 3800), opt, r)));
+    opt.maxNodes = 2;
+    TEST_ASSERT_EQUAL(int(nav::RouteStatus::TooFar),
+                      int(nav::findRoute(tiles, tileLL(kRtx, 100, 2000), tileLL(kRtx + 1, 3900, 2000), opt, r)));
+    TEST_ASSERT_EQUAL(0, int(r.pts.size()));
+
+    // A truncated file reads as no data rather than crashing.
+    tiles.files[{kRtx, kRty}].resize(100);
+    opt.maxNodes = 4000;
+    TEST_ASSERT_EQUAL(int(nav::RouteStatus::NoData),
+                      int(nav::findRoute(tiles, tileLL(kRtx, 1500, 2000), tileLL(kRtx, 2500, 2000), opt, r)));
+}
+
+void test_route_modes() {
+    MapTiles tiles;
+    tiles.files[{kRtx, kRty}] = roadGraph();
+    nav::RouteOptions drive, walk;
+    walk.mode = nav::RouteMode::Walk;
+    nav::RouteResult r;
+    const nav::LatLon south = tileLL(kRtx, 3000, 3000), north = tileLL(kRtx, 3000, 1000);
+    // One-way primary: drivable northbound only, walkable both ways.
+    TEST_ASSERT_EQUAL(int(nav::RouteStatus::Ok), int(nav::findRoute(tiles, south, north, drive, r)));
+    TEST_ASSERT_DOUBLE_WITHIN(5, nav::haversineM(south, north), r.lengthM);
+    TEST_ASSERT_EQUAL(int(nav::RouteStatus::NoRoute), int(nav::findRoute(tiles, north, south, drive, r)));
+    TEST_ASSERT_EQUAL(int(nav::RouteStatus::Ok), int(nav::findRoute(tiles, north, south, walk, r)));
+    // Turn from the minor road onto the primary.
+    TEST_ASSERT_EQUAL(int(nav::RouteStatus::Ok),
+                      int(nav::findRoute(tiles, tileLL(kRtx, 2500, 2000), north, drive, r)));
+    const double turn = nav::haversineM(tileLL(kRtx, 2500, 2000), tileLL(kRtx, 3000, 2000)) +
+                        nav::haversineM(tileLL(kRtx, 3000, 2000), north);
+    TEST_ASSERT_DOUBLE_WITHIN(5, turn, r.lengthM);
+
+    // Footpath: walk only. Drive snaps to roads only, and the path is far from any.
+    const nav::LatLon p0 = tileLL(kRtx, 1000, 1200), p1 = tileLL(kRtx, 1000, 2800);
+    TEST_ASSERT_EQUAL(int(nav::RouteStatus::NoRoadNearStart), int(nav::findRoute(tiles, p0, p1, drive, r)));
+    TEST_ASSERT_EQUAL(int(nav::RouteStatus::Ok), int(nav::findRoute(tiles, p0, p1, walk, r)));
+    TEST_ASSERT_DOUBLE_WITHIN(5, nav::haversineM(p0, p1), r.lengthM);
+
+    // The bridge does not connect to the road under it.
+    TEST_ASSERT_EQUAL(int(nav::RouteStatus::NoRoute),
+                      int(nav::findRoute(tiles, tileLL(kRtx, 500, 1600), tileLL(kRtx, 100, 2000), walk, r)));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_world_px_roundtrip);
@@ -312,5 +479,8 @@ int main() {
     RUN_TEST(test_gpx_write_roundtrip);
     RUN_TEST(test_mvt_streets);
     RUN_TEST(test_ascii_fold_and_street_paths);
+    RUN_TEST(test_mvt_roads_parse_and_graph);
+    RUN_TEST(test_route_across_tiles_and_errors);
+    RUN_TEST(test_route_modes);
     return UNITY_END();
 }

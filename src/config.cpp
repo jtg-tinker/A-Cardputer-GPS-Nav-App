@@ -21,6 +21,7 @@ bool AppConfig::load() {
     apiKey = doc["api_key"] | "";
     imperial = doc["imperial"] | false;
     brightness = doc["brightness"] | 160;
+    walkRoutes = strcmp(doc["route_mode"] | "drive", "walk") == 0;
     lastLat = doc["last_lat"] | lastLat;
     lastLon = doc["last_lon"] | lastLon;
     lastZoom = doc["last_zoom"] | lastZoom;
@@ -36,6 +37,7 @@ bool AppConfig::save() const {
     doc["api_key"] = apiKey;
     doc["imperial"] = imperial;
     doc["brightness"] = brightness;
+    doc["route_mode"] = walkRoutes ? "walk" : "drive";
     doc["last_lat"] = lastLat;
     doc["last_lon"] = lastLon;
     doc["last_zoom"] = lastZoom;

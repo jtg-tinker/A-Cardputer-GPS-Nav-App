@@ -5,7 +5,11 @@
 #include <NetworkClientSecure.h>
 #include <WiFi.h>
 #include <streets.h>
+#include <roads.h>
 #include <tilesource.h>
+
+#include <utility>
+#include <vector>
 
 #include "app.h"
 #include "certs.h"
@@ -209,8 +213,9 @@ FetchResult fetchTile(HTTPClient &http, NetworkClientSecure &client, int z, int 
 
 // Vector street data for one z14 tile, stored as a compact street file. Empty tiles (no data
 // at the server) still get an empty street file so lookups know the area was downloaded.
+// The tile itself is kept at keepPath for the road graph, which is built once WiFi is off.
 FetchResult fetchStreetTile(HTTPClient &http, NetworkClientSecure &client, int x, int y, const char *path,
-                            int &lastCode) {
+                            const char *keepPath, int &lastCode) {
     char url[256];
     if (!nav::buildStreetUrl(app::config.apiKey.c_str(), nav::kStreetZoom, x, y, url, sizeof url))
         return FetchResult::AuthError;
@@ -240,7 +245,12 @@ FetchResult fetchStreetTile(HTTPClient &http, NetworkClientSecure &client, int x
             f.close();
             http.end();
             const bool ok = written >= 0 && streetdata::convertDownloaded(tmp.c_str(), path);
-            SD.remove(tmp);
+            if (ok) {
+                SD.remove(keepPath);
+                if (!SD.rename(tmp, keepPath)) SD.remove(tmp);
+            } else {
+                SD.remove(tmp);
+            }
             if (ok) return empty ? FetchResult::NotFound : FetchResult::Ok;
             continue;
         }
@@ -310,7 +320,7 @@ bool downloadRegion(const Region &r) {
         canvas.fillRect(6, 24, int((app::kW - 12) * pct / 100.0f), 8, ui::kAccent);
         char line[64], stage[16];
         if (z >= 0) snprintf(stage, sizeof stage, "zoom %d", z);
-        else snprintf(stage, sizeof stage, "street names");
+        else snprintf(stage, sizeof stage, "street data");
         snprintf(line, sizeof line, "%lu / %lu tiles (%.1f%%)  %s", (unsigned long)done, (unsigned long)total,
                  pct, stage);
         canvas.drawString(line, 4, 40);
@@ -335,27 +345,36 @@ bool downloadRegion(const Region &r) {
     };
 
     // Street data first: it is small, and a long map download may be cancelled part way.
-    uint32_t streetOk = 0, streetFailed = 0;
+    uint32_t streetOk = 0, streetFailed = 0, roadFailed = 0;
+    char roadPath[112];
+    std::vector<std::pair<int, int>> pendingRoads;  // street tiles awaiting their road graph
     String streetNote;
     for (int x = sr.x0; wantStreets && x <= sr.x1 && !abortReason.length() && !streetNote.length(); ++x) {
         if (nav::buildStreetDir(storage::kStreetsRoot, nav::kStreetZoom, x, dir, sizeof dir)) storage::mkdirs(dir);
+        if (nav::buildRoadDir(storage::kRoadsRoot, nav::kStreetZoom, x, dir, sizeof dir)) storage::mkdirs(dir);
         for (int y = sr.y0; y <= sr.y1; ++y) {
             app::service();
             if (cancelRequested() && ui::confirm("Cancel download?", "Tiles fetched so far are kept.")) {
                 abortReason = "Cancelled.";
                 break;
             }
-            if (!nav::buildStreetPath(storage::kStreetsRoot, nav::kStreetZoom, x, y, path, sizeof path)) {
+            if (!nav::buildStreetPath(storage::kStreetsRoot, nav::kStreetZoom, x, y, path, sizeof path) ||
+                !nav::buildRoadPath(storage::kRoadsRoot, nav::kStreetZoom, x, y, roadPath, sizeof roadPath)) {
                 abortReason = "Street data path too long.";
                 break;
             }
-            if (SD.exists(path)) {
+            const String keep = String(roadPath) + ".pbf";
+            if (SD.exists(path) && SD.exists(roadPath)) {
                 ++skipped;
                 ++streetOk;
+            } else if (SD.exists(path) && SD.exists(keep)) {  // left over from an interrupted download
+                ++skipped;
+                ++streetOk;
+                pendingRoads.emplace_back(x, y);
             } else {
-                switch (fetchStreetTile(http, client, x, y, path, lastCode)) {
-                    case FetchResult::Ok: ++ok; ++streetOk; break;
-                    case FetchResult::NotFound: ++missing; ++streetOk; break;
+                switch (fetchStreetTile(http, client, x, y, path, keep.c_str(), lastCode)) {
+                    case FetchResult::Ok: ++ok; ++streetOk; pendingRoads.emplace_back(x, y); break;
+                    case FetchResult::NotFound: ++missing; ++streetOk; pendingRoads.emplace_back(x, y); break;
                     case FetchResult::AuthError:
                         streetNote = "Street names skipped: MapTiler refused the street data (HTTP " +
                                      String(lastCode) + ").";
@@ -416,13 +435,34 @@ bool downloadRegion(const Region &r) {
             }
         }
     }
-    if (!wantStreets) streetNote = "Street names in the top bar need a MapTiler key.";
-    else if (!streetNote.length())
-        streetNote = "Street names: " + String(streetOk) + " of " + String(streetTotal) + " areas" +
-                     (streetFailed ? ", " + String(streetFailed) + " failed." : ".");
     http.end();
     client.stop();
     wifiOff();
+
+    // Road graphs need the RAM that WiFi and TLS were using.
+    for (size_t i = 0; i < pendingRoads.size(); ++i) {
+        const int x = pendingRoads[i].first, y = pendingRoads[i].second;
+        if (!nav::buildRoadPath(storage::kRoadsRoot, nav::kStreetZoom, x, y, roadPath, sizeof roadPath)) continue;
+        const String keep = String(roadPath) + ".pbf";
+        if (millis() - lastDraw > 250 || i == 0) {
+            lastDraw = millis();
+            canvas.fillScreen(ui::kBg);
+            ui::header("Downloading", r.name.c_str());
+            canvas.setFont(&fonts::Font0);
+            canvas.setTextColor(ui::kFg);
+            canvas.drawString("Building routing data", 4, 40);
+            canvas.drawString(String(i + 1) + " / " + String(pendingRoads.size()) + " areas", 4, 52);
+            ui::present();
+        }
+        app::service();
+        if (!streetdata::convertRoads(keep.c_str(), roadPath)) ++roadFailed;
+        SD.remove(keep);
+    }
+    if (!wantStreets) streetNote = "Street names and routing need a MapTiler key.";
+    else if (!streetNote.length())
+        streetNote = "Street names: " + String(streetOk) + " of " + String(streetTotal) + " areas" +
+                     (streetFailed ? ", " + String(streetFailed) + " failed." : ".") +
+                     (roadFailed ? " Routing data failed for " + String(roadFailed) + "." : "");
 
     char summary[160];
     snprintf(summary, sizeof summary, "%lu new, %lu already cached, %lu failed, %lu unavailable.",

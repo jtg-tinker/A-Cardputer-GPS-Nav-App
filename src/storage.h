@@ -6,6 +6,7 @@ namespace storage {
 constexpr const char *kRoot = "/gpsnav";
 constexpr const char *kTilesRoot = "/gpsnav/tiles";
 constexpr const char *kStreetsRoot = "/gpsnav/streets";
+constexpr const char *kRoadsRoot = "/gpsnav/roads";
 constexpr const char *kConfigPath = "/gpsnav/config.json";
 constexpr const char *kWaypointsPath = "/gpsnav/waypoints.gpx";
 constexpr const char *kRegionsPath = "/gpsnav/regions.csv";

@@ -5,6 +5,7 @@
 
 #include "app.h"
 #include "input.h"
+#include "routing.h"
 #include "screens.h"
 #include "storage.h"
 #include "streetdata.h"
@@ -18,7 +19,9 @@ namespace {
 M5Canvas base;
 constexpr int kPanStep = 48;
 constexpr uint16_t kNoTile = 0xDEFB;
-constexpr uint16_t kRouteColor = 0xF81F;
+constexpr uint16_t kRouteColor = 0x001F;
+constexpr uint16_t kStartColor = 0x0600;
+constexpr uint16_t kEndColor = 0xF800;
 constexpr uint16_t kTrackColor = 0xFC00;
 constexpr uint16_t kTargetColor = 0x07FF;
 constexpr uint16_t kPosColor = 0x041F;
@@ -196,10 +199,21 @@ void MapView::drawOverlays() {
     }
 
     auto &nd = app::navdata;
-    if (nd.hasRoute()) drawPolyline(*this, nd.route, kRouteColor, 1.6f, &MapView::toScreen);
+    if (nd.hasRoute()) drawPolyline(*this, nd.route, kRouteColor, 2.5f, &MapView::toScreen);
     if (!nd.breadcrumb.empty()) drawPolyline(*this, nd.breadcrumb, kTrackColor, 1.0f, &MapView::toScreen);
 
     canvas.setFont(&fonts::Font0);
+    auto endpoint = [&](bool show, const nav::LatLon &p, uint16_t color, const char *label) {
+        int x, y;
+        if (!show || !toScreen(p, x, y) || x < -8 || x > app::kW + 8 || y < -8 || y > app::kH + 8) return;
+        canvas.fillCircle(x, y, 6, color);
+        canvas.drawCircle(x, y, 6, 0xFFFF);
+        canvas.setTextDatum(middle_center);
+        canvas.setTextColor(0xFFFF);
+        canvas.drawString(label, x + 1, y + 1);
+    };
+    endpoint(nd.hasRouteStart, nd.routeStart, kStartColor, "S");
+    endpoint(nd.hasRouteEnd, nd.routeEnd, kEndColor, "E");
     canvas.setTextDatum(middle_left);
     for (const auto &w : nd.waypoints) {
         int x, y;
@@ -340,7 +354,10 @@ void MapView::drawStatus() {
     const int by = app::kH - 11;
     canvas.fillRect(0, by, app::kW, 11, 0x0000);
     const Guidance g = app::navdata.guidance(fix);
-    if (g.active) {
+    if (noteUntil_ && int32_t(millis() - noteUntil_) < 0) {
+        canvas.setTextColor(ui::kAccent);
+        canvas.drawString(note_.c_str(), 2, by + 2);
+    } else if (g.active) {
         char d[16], rem[16];
         nav::formatDistance(g.distNextM, app::config.imperial, d, sizeof d);
         nav::formatDistance(g.remainingM, app::config.imperial, rem, sizeof rem);
@@ -388,10 +405,39 @@ void MapView::handleKey() {
     else if (k.ch == 'w') screens::quickWaypoint(center_);
     else if (k.ch == 'r') screens::toggleRecording();
     else if (k.ch == 'x') screens::clearNavigation();
+    else if (k.ch == 's' || k.ch == 'e') setRoutePoint(k.ch == 's');
     else return;
     lastFrame_ = 0;  // redraw immediately
     if (!k.up && !k.down && !k.left && !k.right && k.ch != '=' && k.ch != '+' && k.ch != '-' && k.ch != '_')
         baseDirty_ = true;  // returning from a full-screen dialog
+}
+
+void MapView::showNote(const String &s, uint32_t ms) {
+    note_ = s;
+    noteUntil_ = millis() + ms;
+    if (!noteUntil_) noteUntil_ = 1;
+}
+
+// s / e: route start or end at the crosshair (the GPS position while following it).
+void MapView::setRoutePoint(bool start) {
+    auto &nd = app::navdata;
+    if (start) {
+        nd.routeStart = center_;
+        nd.hasRouteStart = true;
+    } else {
+        nd.routeEnd = center_;
+        nd.hasRouteEnd = true;
+    }
+    if (!nd.hasRouteStart || !nd.hasRouteEnd) {
+        showNote(start ? "Start set. Press e at the end point." : "End set. Press s at the start point.");
+        return;
+    }
+    nd.clearTarget();
+    if (nd.routeFromMap) nd.clearRoute();
+    releaseBase();  // the route search needs the memory
+    String msg;
+    if (routing::compute(nd.routeStart, nd.routeEnd, msg)) showNote(msg, 8000);
+    else ui::message("No route", msg);
 }
 
 void MapView::tick() {

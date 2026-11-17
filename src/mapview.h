@@ -1,4 +1,5 @@
 #pragma once
+#include <Arduino.h>
 #include <geo.h>
 
 class MapView {
@@ -21,6 +22,8 @@ private:
     void pan(int dx, int dy);
     void setZoom(int z);
     void persistView();
+    void setRoutePoint(bool start);
+    void showNote(const String &s, uint32_t ms = 5000);
 
     nav::LatLon center_{0, 0};
     int zoom_ = 3;
@@ -35,6 +38,8 @@ private:
     bool upscaled_ = false;  // some visible tiles are enlarged from a lower zoom
     int streetState_ = -1;
     char street_[64] = {0};
+    String note_;
+    uint32_t noteUntil_ = 0;
 };
 
 extern MapView mapView;
