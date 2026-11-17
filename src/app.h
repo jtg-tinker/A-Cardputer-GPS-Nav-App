@@ -10,7 +10,7 @@ namespace app {
 
 constexpr int kW = 240;
 constexpr int kH = 135;
-constexpr const char *kVersion = "0.1.6";
+constexpr const char *kVersion = "0.1.7";
 constexpr const char *kUserAgent = "cardputer-gps-nav/0.1 (+https://github.com/jtg-tinker/cardputer-gps-nav)";
 
 extern M5Canvas canvas;

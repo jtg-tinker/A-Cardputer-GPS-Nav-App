@@ -9,6 +9,8 @@ namespace streetdata {
 
 // Turns a downloaded vector tile (plain or gzip) into the compact street file at binPath.
 bool convertDownloaded(const char *pbfPath, const char *binPath);
+// Builds the road graph file for routing. Needs a lot of RAM, so run it with WiFi off.
+bool convertRoads(const char *pbfPath, const char *roadPath);
 
 // Street name at p: 1 = found, 0 = street data present but no named street nearby,
 // -1 = no street data downloaded for this spot.

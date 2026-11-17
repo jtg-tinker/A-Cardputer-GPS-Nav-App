@@ -46,6 +46,14 @@ public:
     bool loadRoute(const String &path, String &err);
     void reverseRoute();
     void clearRoute();
+    // Route worked out from the map's start / end points (replaces the current route).
+    void setRoute(std::vector<nav::LatLon> &&pts, const String &name);
+    bool routeFromMap = false;
+
+    // Start / end picked on the map with s / e
+    bool hasRouteStart = false, hasRouteEnd = false;
+    nav::LatLon routeStart{0, 0}, routeEnd{0, 0};
+    void clearRoutePoints() { hasRouteStart = hasRouteEnd = false; }
 
     Guidance guidance(const GpsFix &fix);
 

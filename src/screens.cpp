@@ -396,10 +396,14 @@ void toggleRecording() {
 }
 
 void clearNavigation() {
-    if (!app::navdata.hasTarget() && !app::navdata.hasRoute()) return;
-    if (!ui::confirm("Clear navigation", "Stop guiding to the current target / route?")) return;
-    app::navdata.clearTarget();
-    app::navdata.clearRoute();
+    auto &nd = app::navdata;
+    if (!nd.hasTarget() && !nd.hasRoute() && !nd.hasRouteStart && !nd.hasRouteEnd) return;
+    if ((nd.hasTarget() || nd.hasRoute()) &&
+        !ui::confirm("Clear navigation", "Stop guiding to the current target / route?"))
+        return;
+    nd.clearTarget();
+    nd.clearRoute();
+    nd.clearRoutePoints();
 }
 
 void gpsStatus() {
@@ -461,6 +465,7 @@ void settingsMenu() {
             "Test provider / key",
             String("Units: ") + (cfg.imperial ? "imperial" : "metric"),
             "Brightness: " + String(cfg.brightness * 100 / 255) + "%",
+            String("Route mode: ") + (cfg.walkRoutes ? "walk" : "drive"),
         };
         sel = ui::menu("Settings", items, sel);
         switch (sel) {
@@ -507,6 +512,7 @@ void settingsMenu() {
                 cfg.brightness = cfg.brightness >= 240 ? 40 : min(255, cfg.brightness + 50);
                 M5Cardputer.Display.setBrightness(cfg.brightness);
                 break;
+            case 7: cfg.walkRoutes = !cfg.walkRoutes; break;
             default: return;
         }
         cfg.save();
@@ -517,7 +523,7 @@ void storageInfo() {
     const uint64_t total = storage::totalBytes(), free = storage::freeBytes();
     ui::message("Storage", "SD card: " + fmtBytes(total) + " total, " + fmtBytes(free) +
                                " free.\n\nTiles: /gpsnav/tiles\nRoutes (GPX in): /gpsnav/routes\nTracks: "
-                               "/gpsnav/tracks\nWaypoints: /gpsnav/waypoints.gpx\nSettings: /gpsnav/config.json");
+                               "/gpsnav/tracks\nRoads: /gpsnav/roads\nWaypoints: /gpsnav/waypoints.gpx\nSettings: /gpsnav/config.json");
 }
 
 void help() {
@@ -527,6 +533,7 @@ void help() {
                 "d download maps      g waypoints\n"
                 "w save waypoint      r record track\n"
                 "i GPS status         x clear nav\n"
+                "s route start        e route end\n"
                 "` back in menus      fn+` cancel text\n"
                 "Map: maptiler.com/copyright,\n"
                 "thunderforest.com; (c) OpenStreetMap");

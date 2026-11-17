@@ -10,6 +10,7 @@ struct AppConfig {
     String apiKey;
     bool imperial = false;
     uint8_t brightness = 160;
+    bool walkRoutes = false;  // street routing: Walk instead of Drive
 
     double lastLat = 20.0;
     double lastLon = 0.0;

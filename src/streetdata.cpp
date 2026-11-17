@@ -3,6 +3,7 @@
 #include <SD.h>
 #include <math.h>
 #include <miniz.h>
+#include <roads.h>
 #include <streets.h>
 
 #include <memory>
@@ -89,31 +90,60 @@ bool gunzip(File &in, File &out) {
     }
 }
 
-bool convertMvt(File &in, const char *binPath) {
-    const String tmp = String(binPath) + ".part";
+// Writes path via a temporary file; fn returns < 0 on failure.
+template <typename Fn>
+bool writeAtomic(const char *path, Fn fn) {
+    const String tmp = String(path) + ".part";
     File out = SD.open(tmp, FILE_WRITE);
     if (!out) return false;
     FileSink sink(out);
-    int parts;
+    const int r = fn(sink);
+    out.close();
+    if (r < 0) {
+        SD.remove(tmp);
+        return false;
+    }
+    SD.remove(path);
+    if (SD.rename(tmp, path)) return true;
+    SD.remove(tmp);
+    return false;
+}
+
+bool convertStreets(File &in, const char *binPath) {
     const size_t sz = in.size();
     std::unique_ptr<uint8_t[]> mem(sz <= kMaxConvertInMemory ? new (std::nothrow) uint8_t[sz ? sz : 1] : nullptr);
     if (mem && in.seek(0) && in.read(mem.get(), sz) == int(sz)) {
         nav::MemSource src(mem.get(), sz);
-        parts = nav::convertMvtStreets(src, sink);
+        return writeAtomic(binPath, [&](nav::ByteSink &s) { return nav::convertMvtStreets(src, s); });
+    }
+    mem.reset();
+    FileSource src(in);
+    return writeAtomic(binPath, [&](nav::ByteSink &s) { return nav::convertMvtStreets(src, s); });
+}
+
+// Calls fn with the uncompressed tile (gzip is unpacked to a temporary file).
+template <typename Fn>
+bool withPlainTile(const char *pbfPath, Fn fn) {
+    File in = SD.open(pbfPath, FILE_READ);
+    if (!in) return false;
+    bool ok;
+    if (isGzip(in)) {
+        const String raw = String(pbfPath) + ".raw";
+        File r = SD.open(raw, FILE_WRITE);
+        ok = r && gunzip(in, r);
+        if (r) r.close();
+        in.close();
+        if (ok) {
+            File rr = SD.open(raw, FILE_READ);
+            ok = rr && fn(rr);
+            if (rr) rr.close();
+        }
+        SD.remove(raw);
     } else {
-        mem.reset();
-        FileSource src(in);
-        parts = nav::convertMvtStreets(src, sink);
+        ok = fn(in);
+        in.close();
     }
-    out.close();
-    if (parts < 0) {
-        SD.remove(tmp);
-        return false;
-    }
-    SD.remove(binPath);
-    if (SD.rename(tmp, binPath)) return true;
-    SD.remove(tmp);
-    return false;
+    return ok;
 }
 
 struct Cache {
@@ -149,27 +179,16 @@ void loadTile(int tx, int ty) {
 }  // namespace
 
 bool convertDownloaded(const char *pbfPath, const char *binPath) {
-    File in = SD.open(pbfPath, FILE_READ);
-    if (!in) return false;
-    bool ok;
-    if (isGzip(in)) {
-        const String raw = String(pbfPath) + ".raw";
-        File r = SD.open(raw, FILE_WRITE);
-        ok = r && gunzip(in, r);
-        if (r) r.close();
-        in.close();
-        if (ok) {
-            File rr = SD.open(raw, FILE_READ);
-            ok = rr && convertMvt(rr, binPath);
-            if (rr) rr.close();
-        }
-        SD.remove(raw);
-    } else {
-        ok = convertMvt(in, binPath);
-        in.close();
-    }
+    const bool ok = withPlainTile(pbfPath, [&](File &f) { return convertStreets(f, binPath); });
     invalidate();
     return ok;
+}
+
+bool convertRoads(const char *pbfPath, const char *roadPath) {
+    return withPlainTile(pbfPath, [&](File &f) {
+        FileSource src(f);
+        return writeAtomic(roadPath, [&](nav::ByteSink &s) { return nav::convertMvtRoads(src, s); });
+    });
 }
 
 namespace {
